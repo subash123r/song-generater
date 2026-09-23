@@ -7,10 +7,20 @@ dotenv.config();
 
 const app = express();
 
+// ========================================
+// MIDDLEWARE
+// ========================================
+
 app.use(cors());
 app.use(express.json());
 
-const PORT = 5000;
+// Render provides PORT automatically.
+// Local development will use 5000.
+const PORT = process.env.PORT || 5000;
+
+// ========================================
+// API KEYS
+// ========================================
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY;
@@ -27,12 +37,18 @@ if (YOUTUBE_API_KEY) {
   console.log("❌ YouTube API key missing");
 }
 
-const ai = new GoogleGenAI({
-  apiKey: GEMINI_API_KEY,
-});
+// ========================================
+// GEMINI CLIENT
+// ========================================
+
+const ai = GEMINI_API_KEY
+  ? new GoogleGenAI({
+      apiKey: GEMINI_API_KEY,
+    })
+  : null;
 
 // ========================================
-// HOME
+// HOME / HEALTH CHECK
 // ========================================
 
 app.get("/", (req, res) => {
@@ -42,16 +58,31 @@ app.get("/", (req, res) => {
   });
 });
 
+app.get("/api/health", (req, res) => {
+  res.json({
+    success: true,
+    server: "running",
+    gemini: Boolean(GEMINI_API_KEY),
+    youtube: Boolean(YOUTUBE_API_KEY),
+  });
+});
+
 // ========================================
 // GEMINI FUNCTION
 // ========================================
 
 async function generateWithGemini(prompt) {
+  if (!ai) {
+    throw new Error("GEMINI_API_KEY is missing");
+  }
+
   const maxAttempts = 3;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      console.log(`Gemini attempt ${attempt}/${maxAttempts}`);
+      console.log(
+        `🤖 Gemini attempt ${attempt}/${maxAttempts}`
+      );
 
       const response = await ai.models.generateContent({
         model: "gemini-3.5-flash-lite",
@@ -64,15 +95,19 @@ async function generateWithGemini(prompt) {
       return response;
     } catch (error) {
       console.error(
-        `Gemini attempt ${attempt} failed:`,
+        `❌ Gemini attempt ${attempt} failed:`,
         error?.message || error
       );
 
+      const status = error?.status;
+
       if (
-        (error?.status === 503 || error?.status === 429) &&
+        (status === 503 || status === 429) &&
         attempt < maxAttempts
       ) {
-        console.log("⏳ Gemini temporarily unavailable. Retrying...");
+        console.log(
+          "⏳ Gemini temporarily unavailable. Retrying..."
+        );
 
         await new Promise((resolve) =>
           setTimeout(resolve, 1500 * attempt)
@@ -85,7 +120,9 @@ async function generateWithGemini(prompt) {
     }
   }
 
-  throw new Error("Gemini request failed after retries");
+  throw new Error(
+    "Gemini request failed after retries"
+  );
 }
 
 // ========================================
@@ -111,7 +148,16 @@ app.post("/api/generate-song", async (req, res) => {
     console.log("Language:", language);
     console.log("================================");
 
-    if (!name || !age || !relationship || !language) {
+    // ------------------------------------
+    // VALIDATION
+    // ------------------------------------
+
+    if (
+      !name ||
+      !age ||
+      !relationship ||
+      !language
+    ) {
       return res.status(400).json({
         success: false,
         message:
@@ -127,15 +173,24 @@ app.post("/api/generate-song", async (req, res) => {
       });
     }
 
+    // ------------------------------------
+    // LANGUAGE
+    // ------------------------------------
+
     const selectedLanguage =
-      language.toLowerCase() === "english"
+      String(language).toLowerCase() === "english"
         ? "English"
         : "Tamil";
+
+    // ------------------------------------
+    // GEMINI PROMPT
+    // ------------------------------------
 
     const prompt = `
 You are a fun AI music recommendation assistant.
 
 User details:
+
 Name: ${name}
 Age: ${age}
 Relationship status: ${relationship}
@@ -149,10 +204,10 @@ IMPORTANT RULES:
 2. Do not claim that you know their actual personality from their name or age.
 3. This is only a creative and fictional music interpretation.
 4. Keep the response friendly and suitable for a general audience.
-5. The selected music language MUST be respected.
+5. Respect the selected music language.
 6. If the selected language is Tamil, recommend Tamil music only.
 7. If the selected language is English, recommend English music only.
-8. The relationship status can influence the fictional music mood.
+8. Relationship status can influence the fictional music mood.
 9. Do not make sensitive personal assumptions.
 10. Return ONLY valid JSON.
 11. Do not use markdown.
@@ -175,32 +230,50 @@ Return exactly:
 }
 `;
 
-    const response = await generateWithGemini(prompt);
+    // ------------------------------------
+    // GEMINI REQUEST
+    // ------------------------------------
+
+    const response =
+      await generateWithGemini(prompt);
 
     console.log("");
     console.log("Gemini response:");
-    console.log(response.text);
+    console.log(response?.text);
     console.log("");
 
-    if (!response.text) {
+    if (!response?.text) {
       return res.status(500).json({
         success: false,
-        message: "Gemini returned an empty response",
+        message:
+          "Gemini returned an empty response",
       });
     }
+
+    // ------------------------------------
+    // PARSE JSON
+    // ------------------------------------
 
     let data;
 
     try {
       data = JSON.parse(response.text);
     } catch (error) {
-      console.error("❌ Gemini JSON parse error");
+      console.error(
+        "❌ Gemini JSON parse error:",
+        error
+      );
 
       return res.status(500).json({
         success: false,
-        message: "Gemini returned invalid JSON",
+        message:
+          "Gemini returned invalid JSON",
       });
     }
+
+    // ------------------------------------
+    // RESPONSE
+    // ------------------------------------
 
     return res.json({
       success: true,
@@ -211,7 +284,10 @@ Return exactly:
       language: selectedLanguage,
 
       data: {
-        vibe: data.vibe || "Feel Good",
+        vibe:
+          data.vibe ||
+          "Feel Good",
+
         description:
           data.description ||
           "A fun music vibe created just for you.",
@@ -228,7 +304,9 @@ Return exactly:
   } catch (error) {
     console.error("");
     console.error("❌ GEMINI ERROR");
-    console.error(error);
+    console.error(
+      error?.message || error
+    );
     console.error("");
 
     if (error?.status === 503) {
@@ -250,16 +328,20 @@ Return exactly:
     return res.status(500).json({
       success: false,
       message:
-        error?.message || "Gemini API failed",
+        error?.message ||
+        "Gemini API failed",
     });
   }
 });
 
 // ========================================
-// YOUTUBE SEARCH
+// YOUTUBE SEARCH FUNCTION
 // ========================================
 
-async function searchYouTube(query, language) {
+async function searchYouTube(
+  query,
+  language
+) {
   if (!YOUTUBE_API_KEY) {
     throw new Error(
       "YOUTUBE_API_KEY is missing in server/.env"
@@ -274,6 +356,10 @@ async function searchYouTube(query, language) {
   console.log("Query:", query);
   console.log("================================");
 
+  // ------------------------------------
+  // FINAL SEARCH QUERY
+  // ------------------------------------
+
   let finalQuery = query;
 
   if (language === "Tamil") {
@@ -281,6 +367,10 @@ async function searchYouTube(query, language) {
   } else {
     finalQuery = `${query} English song`;
   }
+
+  // ------------------------------------
+  // YOUTUBE API URL
+  // ------------------------------------
 
   const url =
     "https://www.googleapis.com/youtube/v3/search" +
@@ -291,18 +381,31 @@ async function searchYouTube(query, language) {
     "&order=relevance" +
     "&regionCode=IN" +
     `&relevanceLanguage=${
-      language === "Tamil" ? "ta" : "en"
+      language === "Tamil"
+        ? "ta"
+        : "en"
     }` +
     "&videoEmbeddable=true" +
     "&videoSyndicated=true" +
     `&key=${YOUTUBE_API_KEY}`;
 
+  // ------------------------------------
+  // REQUEST
+  // ------------------------------------
+
   const response = await fetch(url);
 
   const result = await response.json();
 
+  // ------------------------------------
+  // API ERROR
+  // ------------------------------------
+
   if (!response.ok) {
-    console.error("❌ YouTube API error:");
+    console.error(
+      "❌ YouTube API error:"
+    );
+
     console.error(result);
 
     throw new Error(
@@ -311,10 +414,17 @@ async function searchYouTube(query, language) {
     );
   }
 
+  // ------------------------------------
+  // FORMAT RESULTS
+  // ------------------------------------
+
   const videos = (result.items || [])
-    .filter((item) => item.id?.videoId)
+    .filter(
+      (item) => item.id?.videoId
+    )
     .map((item) => ({
-      videoId: item.id.videoId,
+      videoId:
+        item.id.videoId,
 
       title:
         item.snippet?.title ||
@@ -346,133 +456,219 @@ async function searchYouTube(query, language) {
 // GET SONGS
 // ========================================
 
-app.get("/api/music/search", async (req, res) => {
-  try {
-    const query = req.query.name?.trim();
-    const language =
-      req.query.language === "English"
-        ? "English"
-        : "Tamil";
+app.get(
+  "/api/music/search",
+  async (req, res) => {
+    try {
+      const query =
+        req.query.name?.trim();
 
-    if (!query) {
-      return res.status(400).json({
-        success: false,
-        message: "Song search query is required",
-      });
-    }
+      const language =
+        req.query.language ===
+        "English"
+          ? "English"
+          : "Tamil";
 
-    let results = await searchYouTube(
-      query,
-      language
-    );
+      // ----------------------------------
+      // VALIDATION
+      // ----------------------------------
 
-    // Backup searches
-    if (results.length < 3) {
-      const extraQueries =
-        language === "Tamil"
-          ? [
-              `${query} Tamil melody`,
-              `${query} Tamil hit song`,
-              `${query} Tamil music`,
-            ]
-          : [
-              `${query} English melody`,
-              `${query} English hit song`,
-              `${query} English music`,
-            ];
+      if (!query) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Song search query is required",
+        });
+      }
 
-      for (const extraQuery of extraQueries) {
-        const extra = await searchYouTube(
-          extraQuery,
+      // ----------------------------------
+      // FIRST SEARCH
+      // ----------------------------------
+
+      let results =
+        await searchYouTube(
+          query,
           language
         );
 
-        results.push(...extra);
+      // ----------------------------------
+      // BACKUP SEARCHES
+      // ----------------------------------
 
-        if (results.length >= 10) {
-          break;
+      if (results.length < 3) {
+        const extraQueries =
+          language === "Tamil"
+            ? [
+                `${query} Tamil melody`,
+                `${query} Tamil hit song`,
+                `${query} Tamil music`,
+              ]
+            : [
+                `${query} English melody`,
+                `${query} English hit song`,
+                `${query} English music`,
+              ];
+
+        for (
+          const extraQuery of extraQueries
+        ) {
+          try {
+            const extra =
+              await searchYouTube(
+                extraQuery,
+                language
+              );
+
+            results.push(...extra);
+
+            if (
+              results.length >= 10
+            ) {
+              break;
+            }
+          } catch (error) {
+            console.error(
+              "Backup YouTube search failed:",
+              error?.message
+            );
+          }
         }
       }
-    }
 
-    // Remove duplicate videos
-    const unique = [];
-    const seen = new Set();
+      // ----------------------------------
+      // REMOVE DUPLICATES
+      // ----------------------------------
 
-    for (const video of results) {
-      if (!seen.has(video.videoId)) {
-        seen.add(video.videoId);
-        unique.push(video);
+      const unique = [];
+      const seen = new Set();
+
+      for (
+        const video of results
+      ) {
+        if (
+          !seen.has(
+            video.videoId
+          )
+        ) {
+          seen.add(
+            video.videoId
+          );
+
+          unique.push(video);
+        }
       }
-    }
 
-    if (unique.length === 0) {
-      return res.status(404).json({
+      // ----------------------------------
+      // NO RESULTS
+      // ----------------------------------
+
+      if (
+        unique.length === 0
+      ) {
+        return res.status(404).json({
+          success: false,
+          message:
+            `No ${language} songs found`,
+        });
+      }
+
+      console.log(
+        `✅ Found ${unique.length} ${language} songs`
+      );
+
+      // ----------------------------------
+      // RESPONSE
+      // ----------------------------------
+
+      return res.json({
+        success: true,
+        query,
+        language,
+        data: unique.slice(
+          0,
+          10
+        ),
+      });
+    } catch (error) {
+      console.error("");
+      console.error(
+        "❌ YOUTUBE ERROR"
+      );
+      console.error(
+        error?.message || error
+      );
+      console.error("");
+
+      return res.status(500).json({
         success: false,
         message:
-          `No ${language} songs found`,
+          error?.message ||
+          "Song search failed",
       });
     }
-
-    console.log(
-      `✅ Found ${unique.length} ${language} songs`
-    );
-
-    return res.json({
-      success: true,
-      query,
-      language,
-      data: unique.slice(0, 10),
-    });
-  } catch (error) {
-    console.error("");
-    console.error("❌ YOUTUBE ERROR");
-    console.error(error);
-    console.error("");
-
-    return res.status(500).json({
-      success: false,
-      message:
-        error?.message ||
-        "Song search failed",
-    });
   }
-});
+);
 
 // ========================================
-// OLD ENDPOINT SUPPORT
+// OLD TAMIL ENDPOINT
 // ========================================
 
-app.get("/api/music/tamil", async (req, res) => {
-  try {
-    const query = req.query.name?.trim();
+app.get(
+  "/api/music/tamil",
+  async (req, res) => {
+    try {
+      const query =
+        req.query.name?.trim();
 
-    if (!query) {
-      return res.status(400).json({
+      if (!query) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Song search query is required",
+        });
+      }
+
+      const results =
+        await searchYouTube(
+          query,
+          "Tamil"
+        );
+
+      return res.json({
+        success: true,
+        query,
+        language: "Tamil",
+        data: results.slice(
+          0,
+          10
+        ),
+      });
+    } catch (error) {
+      console.error(
+        "❌ Tamil search error:",
+        error?.message
+      );
+
+      return res.status(500).json({
         success: false,
-        message: "Song search query is required",
+        message:
+          error?.message ||
+          "Tamil song search failed",
       });
     }
-
-    const results = await searchYouTube(
-      query,
-      "Tamil"
-    );
-
-    return res.json({
-      success: true,
-      query,
-      language: "Tamil",
-      data: results.slice(0, 10),
-    });
-  } catch (error) {
-    return res.status(500).json({
-      success: false,
-      message:
-        error?.message ||
-        "Tamil song search failed",
-    });
   }
+);
+
+// ========================================
+// 404 HANDLER
+// ========================================
+
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    message: "API route not found",
+    path: req.originalUrl,
+  });
 });
 
 // ========================================
@@ -485,7 +681,10 @@ app.listen(PORT, () => {
   console.log("🚀 AI MUSIC GENERATOR SERVER");
   console.log("================================");
   console.log(
-    `Server: http://localhost:${PORT}`
+    `🌐 Server running on port ${PORT}`
+  );
+  console.log(
+    `🏠 Local: http://localhost:${PORT}`
   );
   console.log(
     GEMINI_API_KEY
